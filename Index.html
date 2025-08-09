@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D Tetris — single file</title>
+  <style>
+    html,body{height:100%;margin:0;background:#111;color:#eee;font-family:Arial}
+    #ui{position:absolute;left:12px;top:12px;z-index:2}
+    #canvas-container{width:100%;height:100%;display:block}
+    button{padding:8px 12px;margin:4px}
+    .panel{background:rgba(0,0,0,0.45);padding:10px;border-radius:8px}
+    #help{position:absolute;right:12px;top:12px;text-align:right}
+  </style>
+</head>
+<body>
+  <div id="ui" class="panel">
+    <div><strong>3D Tetris (demo)</strong></div>
+    <div>Score: <span id="score">0</span></div>
+    <div>Level: <span id="level">1</span></div>
+    <div>Speed: <span id="speed">1</span></div>
+    <div style="margin-top:8px">
+      <button id="startBtn">Start / Retry</button>
+      <button id="pauseBtn">Pause</button>
+    </div>
+  </div>
+  <div id="help" class="panel">
+    <div><strong>Controls</strong></div>
+    <div>← → : move X  |  ↑ ↓ : move Z</div>
+    <div>Q / E : rotate Y  |  W / S : rotate X</div>
+    <div>Space : hard drop  |  Shift : soft drop</div>
+  </div>
+  <div id="canvas-container"></div>
+
+  <!-- Three.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+  <script>
+  // Simple 3D Tetris demo
+  (function(){
+    // Grid dimensions
+    const GRID_W = 4; // X
+    const GRID_D = 4; // Z
+    const GRID_H = 16; // Y (height)
+    const BLOCK = 1; // size of cube
+
+    // DOM
+    const container = document.getElementById('canvas-container');
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level');
+    const speedEl = document.getElementById('speed');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    // Three.js setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0b12);
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(7,10,14);
+    camera.lookAt(2,8,2);
+
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    const hemi = new THREE.HemisphereLight(0xffffff,0x444444,0.9);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff,0.6);
+    dir.position.set(5,10,7);
+    scene.add(dir);
+
+    // Grid helper: transparent walls
+    const wallMat = new THREE.MeshStandardMaterial({color:0x222244,transparent:true,opacity:0.12});
+    const floor = new THREE.LineSegments(new THREE.GridHelper(GRID_W*BLOCK, GRID_W));
+    scene.add(floor);
+
+    // Occupied cells grid: [x][y][z]
+    let grid;
+    function makeGrid(){
+      grid = [];
+      for(let x=0;x<GRID_W;x++){
+        grid[x]=[];
+        for(let y=0;y<GRID_H;y++){
+          grid[x][y]=[];
+          for(let z=0;z<GRID_D;z++) grid[x][y][z] = null;
+        }
+      }
+    }
+
+    // Visual container for all placed cubes
+    const placedGroup = new THREE.Group();
+    scene.add(placedGroup);
+
+    // Materials/colors
+    const COLORS = [0xff4b4b,0x4bff9e,0x4bc0ff,0xffe24b,0xb84bff,0xff7abf];
+
+    // Tetromino definitions in relative coordinates (array of {x,y,z})
+    const TETROS = [
+      // Straight line along X (4)
+      [{x:-1,y:0,z:0},{x:0,y:0,z:0},{x:1,y:0,z:0},{x:2,y:0,z:0}],
+      // L-shape
+      [{x:-1,y:0,z:0},{x:0,y:0,z:0},{x:1,y:0,z:0},{x:1,y:1,z:0}],
+      // square 2x2
+      [{x:0,y:0,z:0},{x:1,y:0,z:0},{x:0,y:1,z:0},{x:1,y:1,z:0}],
+      // T
+      [{x:-1,y:0,z:0},{x:0,y:0,z:0},{x:1,y:0,z:0},{x:0,y:1,z:0}],
+      // S
+      [{x:-1,y:0,z:0},{x:0,y:0,z:0},{x:0,y:1,z:0},{x:1,y:1,z:0}],
+      // small vertical (3) — to add variety
+      [{x:0,y:0,z:0},{x:0,y:1,z:0},{x:0,y:2,z:0},{x:1,y:0,z:0}]
+    ];
+
+    function randomTetro(){
+      const idx = Math.floor(Math.random()*TETROS.length);
+      return JSON.parse(JSON.stringify(TETROS[idx]));
+    }
+
+    // Active piece
+    let active = null;
+
+    function createPiece(){
+      const shape = randomTetro();
+      const color = COLORS[Math.floor(Math.random()*COLORS.length)];
+      const group = new THREE.Group();
+      for(const c of shape){
+        const geo = new THREE.BoxGeometry(BLOCK*0.95,BLOCK*0.95,BLOCK*0.95);
+        const mat = new THREE.MeshStandardMaterial({color:color});
+        const mesh = new THREE.Mesh(geo,mat);
+        mesh.position.set(c.x*BLOCK, c.y*BLOCK, c.z*BLOCK);
+        group.add(mesh);
+      }
+      // starting position centered X,Z and top Y
+      const px = Math.floor(GRID_W/2)-1;
+      const pz = Math.floor(GRID_D/2)-1;
+      const py = GRID_H-2;
+      active = {group, cells:shape, pos:{x:px,y:py,z:pz}, color};
+      updateActiveTransform();
+      scene.add(group);
+    }
+
+    function updateActiveTransform(){
+      if(!active) return;
+      active.group.position.set(active.pos.x*BLOCK, active.pos.y*BLOCK, active.pos.z*BLOCK);
+      // align child meshes positions from their relative coords
+      let i=0;
+      for(const child of active.group.children){
+        const c = active.cells[i++];
+        child.position.set(c.x*BLOCK, c.y*BLOCK, c.z*BLOCK);
+      }
+    }
+
+    // Collision test: if any cell of piece would be outside or collide with grid
+    function collides(posCells, pos){
+      for(const c of posCells){
+        const gx = pos.x + c.x;
+        const gy = pos.y + c.y;
+        const gz = pos.z + c.z;
+        if(gx<0||gx>=GRID_W||gz<0||gz>=GRID_D||gy<0) return true;
+        if(gy<GRID_H && grid[gx][gy][gz]) return true;
+      }
+      return false;
+    }
+
+    // Place active into grid
+    function placeActive(){
+      for(const c of active.cells){
+        const gx = active.pos.x + c.x;
+        const gy = active.pos.y + c.y;
+        const gz = active.pos.z + c.z;
+        if(gy>=GRID_H) continue; // above visible
+        // create final cube mesh
+        const geo = new THREE.BoxGeometry(BLOCK*0.95,BLOCK*0.95,BLOCK*0.95);
+        const mat = new THREE.MeshStandardMaterial({color:active.color});
+        const mesh = new THREE.Mesh(geo,mat);
+        mesh.position.set(gx*BLOCK, gy*BLOCK, gz*BLOCK);
+        placedGroup.add(mesh);
+        grid[gx][gy][gz] = mesh;
+      }
+      scene.remove(active.group);
+      active = null;
+    }
+
+    // Rotate active piece around axis (x,y,z) by 90 degrees
+    function rotateActive(axis){
+      if(!active) return;
+      // rotate relative coordinates
+      const newCells = active.cells.map(c=>({x:c.x,y:c.y,z:c.z}));
+      for(const p of newCells){
+        let x=p.x,y=p.y,z=p.z;
+        if(axis==='y'){
+          // rotate around Y: (x,z) -> (-z,x)
+          p.x = -z; p.z = x;
+        } else if(axis==='x'){
+          // rotate around X: (y,z) -> (-z,y)
+          p.y = -z; p.z = y;
+        } else if(axis==='z'){
+          // rotate around Z: (x,y) -> (-y,x)
+          p.x = -y; p.y = x;
+        }
+      }
+      // try wall kicks: attempt no offset, then small offsets
+      const kicks = [{x:0,y:0,z:0},{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1}];
+      for(const k of kicks){
+        const testPos = {x: active.pos.x + k.x, y: active.pos.y + k.y, z: active.pos.z + k.z};
+        if(!collides(newCells, testPos)){
+          active.cells = newCells;
+          active.pos = testPos;
+          updateActiveTransform();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Clear completed horizontal planes (x,z) at any y
+    function clearPlanes(){
+      let cleared = 0;
+      for(let y=0;y<GRID_H;y++){
+        let full = true;
+        for(let x=0;x<GRID_W && full;x++){
+          for(let z=0;z<GRID_D;z++){
+            if(!grid[x][y][z]){ full=false; break; }
+          }
+        }
+        if(full){
+          // remove meshes at y
+          for(let x=0;x<GRID_W;x++){
+            for(let z=0;z<GRID_D;z++){
+              const m = grid[x][y][z];
+              if(m) placedGroup.remove(m);
+              grid[x][y][z] = null;
+            }
+          }
+          // drop everything above down 1
+          for(let yy=y+1;yy<GRID_H;yy++){
+            for(let x=0;x<GRID_W;x++){
+              for(let z=0;z<GRID_D;z++){
+                const m = grid[x][yy][z];
+                grid[x][yy-1][z] = m;
+                if(m) m.position.y -= BLOCK;
+                grid[x][yy][z] = null;
+              }
+            }
+          }
+          cleared++;
+          y--; // re-check same y because we've dropped new row into it
+        }
+      }
+      return cleared;
+    }
+
+    // Game state
+    let score = 0, level=1, speed=1;
+    let dropInterval = 800; // ms
+    let lastDrop = 0;
+    let running = false, paused=false;
+
+    function resetGame(){
+      // remove placed meshes
+      while(placedGroup.children.length) placedGroup.remove(placedGroup.children[0]);
+      makeGrid();
+      score=0; level=1; speed=1; dropInterval = 800;
+      scoreEl.textContent = score; levelEl.textContent = level; speedEl.textContent = speed;
+      if(active){ scene.remove(active.group); active=null; }
+      createPiece();
+      running = true; paused=false;
+    }
+
+    function gameOver(){
+      running=false;
+      alert('Game over! Score: '+score);
+    }
+
+    // Input
+    const keys = {};
+    window.addEventListener('keydown', e=>{ if(e.repeat) return; keys[e.key.toLowerCase()] = true; handleKey(e.key.toLowerCase()); });
+    window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+    function handleKey(k){
+      if(!running) return;
+      if(k==='arrowleft' || k==='a') tryMove(-1,0,0);
+      if(k==='arrowright' || k==='d') tryMove(1,0,0);
+      if(k==='arrowup' || k==='w') tryMove(0,0,-1);
+      if(k==='arrowdown' || k==='s') tryMove(0,0,1);
+      if(k==='q') rotateActive('y');
+      if(k==='e') rotateActive('y');
+      if(k==='w') rotateActive('x');
+      if(k==='z') rotateActive('z');
+      if(k===' ') hardDrop();
+      if(k==='shift') softDrop();
+    }
+
+    function tryMove(dx,dy,dz){
+      if(!active) return false;
+      const newPos = {x: active.pos.x+dx, y: active.pos.y+dy, z: active.pos.z+dz};
+      if(!collides(active.cells, newPos)){
+        active.pos = newPos; updateActiveTransform(); return true;
+      }
+      return false;
+    }
+
+    function softDrop(){
+      if(!active) return;
+      if(!tryMove(0,-1,0)){
+        settle();
+      }
+    }
+
+    function hardDrop(){
+      if(!active) return;
+      while(tryMove(0,-1,0)){}
+      settle();
+    }
+
+    function settle(){
+      placeActive();
+      const cleared = clearPlanes();
+      if(cleared>0){
+        score += (cleared*cleared)*100;
+        level = Math.floor(score/1000)+1;
+        speed = Math.min(10, level);
+        dropInterval = Math.max(150, 800 - (level-1)*60);
+        scoreEl.textContent = score; levelEl.textContent = level; speedEl.textContent = speed;
+      }
+      // spawn next
+      createPiece();
+      // check immediate collision -> game over
+      if(collides(active.cells, active.pos)){
+        gameOver();
+      }
+    }
+
+    // Animation loop
+    function animate(ts){
+      requestAnimationFrame(animate);
+      if(!running || paused){ renderer.render(scene,camera); return; }
+      if(!lastDrop) lastDrop = ts;
+      if(ts - lastDrop > dropInterval){
+        lastDrop = ts;
+        if(!tryMove(0,-1,0)){
+          settle();
+        }
+      }
+      renderer.render(scene,camera);
+    }
+
+    // Resize
+    window.addEventListener('resize', ()=>{ renderer.setSize(window.innerWidth, window.innerHeight); camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); });
+
+    // UI
+    startBtn.addEventListener('click', ()=>{ resetGame(); });
+    pauseBtn.addEventListener('click', ()=>{ paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; });
+
+    // kickoff
+    makeGrid(); createPiece(); requestAnimationFrame(animate);
+
+    // Expose debug (optional)
+    window._t3 = {scene,createPiece,grid};
+  })();
+  </script>
+</body>
+</html>
